@@ -1,0 +1,58 @@
+{
+  "description": "Parameters for VoltShift's deterministic diurnal grid model. Generation curves: solar = capacity * max(0, sin(pi*(h-6)/13)); wind = base * (1 + amplitude*cos(2*pi*(h-3)/24)); load = base_load * (0.72 + 0.12*solar_factor + 0.28*exp(-((h-18)^2)/12.5)).",
+  "peaker_spike": {
+    "carbon_multiplier": 1.3,
+    "carbon_adder": 90,
+    "renewable_share_multiplier": 0.75
+  },
+  "zones": {
+    "ERCOT": {
+      "name": "ERCOT (Texas)",
+      "electricity_maps_zone": "US-TEX-ERCO",
+      "coordinates": [-99.0, 31.2],
+      "base_load_mw": 52000,
+      "solar_capacity_mw": 22000,
+      "wind_base_mw": 14000,
+      "wind_amplitude": 0.45,
+      "hydro_mw": 500,
+      "nuclear_mw": 5000,
+      "fossil_ci": 720
+    },
+    "CAISO": {
+      "name": "CAISO (California)",
+      "electricity_maps_zone": "US-CAL-CISO",
+      "coordinates": [-119.6, 37.2],
+      "base_load_mw": 30000,
+      "solar_capacity_mw": 18000,
+      "wind_base_mw": 3000,
+      "wind_amplitude": 0.3,
+      "hydro_mw": 4000,
+      "nuclear_mw": 2200,
+      "fossil_ci": 450
+    },
+    "PJM": {
+      "name": "PJM (Mid-Atlantic)",
+      "electricity_maps_zone": "US-MIDA-PJM",
+      "coordinates": [-77.8, 39.9],
+      "base_load_mw": 90000,
+      "solar_capacity_mw": 9000,
+      "wind_base_mw": 10000,
+      "wind_amplitude": 0.35,
+      "hydro_mw": 2500,
+      "nuclear_mw": 33000,
+      "fossil_ci": 620
+    },
+    "MISO": {
+      "name": "MISO (Midwest)",
+      "electricity_maps_zone": "US-MIDW-MISO",
+      "coordinates": [-91.5, 42.0],
+      "base_load_mw": 85000,
+      "solar_capacity_mw": 8000,
+      "wind_base_mw": 20000,
+      "wind_amplitude": 0.5,
+      "hydro_mw": 1500,
+      "nuclear_mw": 11000,
+      "fossil_ci": 880
+    }
+  }
+}

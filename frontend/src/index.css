@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #020617;
+}
+
+/* Glowing status badge floating above each 3D site */
+.vs-marker {
+  --vs-marker-color: #22d3ee;
+  cursor: pointer;
+  white-space: nowrap;
+  border-radius: 9999px;
+  border: 1px solid var(--vs-marker-color);
+  background: rgba(2, 6, 23, 0.85);
+  color: var(--vs-marker-color);
+  padding: 2px 8px;
+  font: 600 11px/1.4 'JetBrains Mono', ui-monospace, monospace;
+  box-shadow: 0 0 12px color-mix(in srgb, var(--vs-marker-color) 60%, transparent);
+  transition: color 300ms, border-color 300ms, box-shadow 300ms;
+}
+
+.vs-marker--boost,
+.vs-marker--defer {
+  animation: vs-glow 1.6s ease-in-out infinite;
+}
+
+@keyframes vs-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 8px color-mix(in srgb, var(--vs-marker-color) 45%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 22px color-mix(in srgb, var(--vs-marker-color) 90%, transparent);
+  }
+}
+
+.mapboxgl-ctrl-group {
+  background: #18181b !important;
+}
+.mapboxgl-ctrl-group button .mapboxgl-ctrl-icon {
+  filter: invert(1);
+}
