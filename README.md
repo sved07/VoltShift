@@ -32,6 +32,33 @@ Every API key is optional. If one is missing, VoltShift falls back as follows:
 | `ELECTRICITY_MAPS_KEY` | Diurnal grid model from `app/data/mock_iso_telemetry.json`       |
 | `VITE_MAPBOX_TOKEN`    | Schematic zone grid in place of the 3D Mapbox map                |
 
+## Deploy
+
+The frontend goes on **Vercel** and the backend on **Render**. Vercel can't host the backend
+because its serverless functions don't support persistent WebSockets.
+
+**Backend (Render).** In Render, choose New → **Blueprint**, then pick this repo. Render reads
+[`render.yaml`](render.yaml) and runs:
+
+```
+uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+
+It starts from `backend/`, with health check `/health`. Enter `GEMINI_API_KEY` (and optionally
+`ELECTRICITY_MAPS_KEY`) when Render prompts for them. On the free plan the service sleeps when
+idle, so the first connection after a while can take ~1 minute.
+
+**Frontend (Vercel).** Set the project's **Root Directory** to `frontend`.
+[`frontend/vercel.json`](frontend/vercel.json) handles the build and client-side routing. Add
+these environment variables:
+
+| Variable            | Value                                                  |
+|---------------------|--------------------------------------------------------|
+| `VITE_MAPBOX_TOKEN` | your `pk.…` Mapbox token                               |
+| `VITE_WS_URL`       | `wss://<your-render-service>.onrender.com/ws/grid-telemetry` |
+
+If your Vercel domain changes, update `CORS_ORIGINS` in Render to match.
+
 ## How the agent decides
 
 Each site is checked against these rules in order, and the first match wins:

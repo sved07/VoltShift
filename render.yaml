@@ -1,0 +1,25 @@
+# Render Blueprint for the VoltShift backend (FastAPI + WebSocket).
+# Render dashboard -> New -> Blueprint -> pick this repo. Secrets marked `sync: false`
+# are prompted for on first deploy and never stored in the repo.
+services:
+  - type: web
+    name: voltshift-backend
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.8-flash
+      - key: ELECTRICITY_MAPS_KEY
+        sync: false
+      # Browser origins allowed to call the HTTP endpoints (/health, /api/telemetry).
+      - key: CORS_ORIGINS
+        value: https://voltshift-dusky.vercel.app,http://localhost:5173
