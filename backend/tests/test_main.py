@@ -100,8 +100,9 @@ class TestWebSocketStream:
             normal = receive_until(ws, lambda p: p["sim_hour"] == 14)
             ws.send_json({"action": "TRIGGER_PEAKER_SPIKE"})
             spiked = receive_until(ws, lambda p: p["cumulative_metrics"]["peaker_spike_active"])
-            for iso in ISO_IDS:
+            for iso in ("ERCOT", "PJM", "MISO"):
                 assert by_id(spiked)[iso]["carbon_intensity"] > by_id(normal)[iso]["carbon_intensity"]
+            assert by_id(spiked)["CAISO"]["carbon_intensity"] == by_id(normal)["CAISO"]["carbon_intensity"]
             assert spiked["ai_explanation"]["primary_driver"] == "Grid Fossil Peaker Spike"
             assert {"THROTTLE", "DEFER"} & {w["status"] for w in spiked["workloads"]}
             ws.send_json({"action": "TRIGGER_PEAKER_SPIKE"})
@@ -165,6 +166,111 @@ class TestSimulationSession:
         packet, _ = SimulationSession(sim_hour=18).tick(accrue=False)
         assert packet.ai_explanation.estimated_carbon_saved_kg > 0
         assert "Next 24h" in packet.ai_explanation.forecast_recommendation
+
+
+class TestV2Features:
+    def test_packet_carries_v2_fields(self):
+        packet, _ = SimulationSession(sim_hour=13).tick(accrue=False)
+        m = packet.cumulative_metrics
+        for key in ("avg_carbon_managed", "avg_carbon_baseline", "total_active_kw", "simulation_paused"):
+            assert key in m
+        assert m["total_active_kw"] == pytest.approx(sum(w.current_kw for w in packet.workloads), abs=1)
+        assert all(z.marginal_fuel and z.color_tier in {"green", "amber", "red"} for z in packet.zones)
+        assert all(w.sla_progress_pct is not None for w in packet.workloads)
+        assert all(w.delta_kw == pytest.approx(w.current_kw - w.baseline_kw, abs=0.11) for w in packet.workloads)
+
+    def test_coordinates_are_lon_lat_for_the_map(self):
+        packet, _ = SimulationSession(sim_hour=13).tick(accrue=False)
+        for item in [*packet.zones, *packet.workloads]:
+            lon, lat = item.coordinates
+            assert -125 <= lon <= -66 and 24 <= lat <= 50, item
+
+    def test_hourly_forecast_covers_the_day_in_order(self):
+        packet, _ = SimulationSession(sim_hour=18).tick(accrue=False)
+        forecast = packet.ai_explanation.hourly_forecast
+        assert [p.hour for p in forecast] == list(range(24))
+        assert forecast[13].solar_factor > forecast[7].solar_factor
+        assert forecast[2].solar_factor == 0
+        assert {p.recommended_action for p in forecast} <= {"BOOST", "MAINTAIN", "THROTTLE", "DEFER"}
+
+    def test_forecast_reflects_unmanaged_mode(self):
+        s = SimulationSession(sim_hour=12)
+        s.apply_action(json.dumps({"action": "TOGGLE_MODE"}))
+        forecast = s.tick(accrue=False)[0].ai_explanation.hourly_forecast
+        assert {p.recommended_action for p in forecast} == {"MAINTAIN"}
+
+    def test_sla_progress_advances_on_ticks_only(self):
+        s = SimulationSession(sim_hour=13)
+        before = dict(s.progress)
+        s.tick(accrue=False)
+        assert s.progress == before
+        s.tick(accrue=True)
+        assert all(s.progress[k] > before[k] for k in before)
+
+    def test_reset_metrics_zeroes_kpis_and_restarts_quotas(self):
+        s = SimulationSession(sim_hour=13)
+        for _ in range(5):
+            s.tick(accrue=True)
+        assert s.metrics()["co2_avoided_kg"] > 0 or s.metrics()["cost_savings_usd"] > 0
+        assert s.apply_action(json.dumps({"action": "RESET_METRICS"}))
+        assert s.metrics()["co2_avoided_kg"] == 0 and s.metrics()["cost_savings_usd"] == 0
+        assert set(s.progress.values()) == {35.0}
+
+    def test_toggle_ticker_pauses_simulation_but_not_packets(self):
+        s = SimulationSession(sim_hour=13)
+        assert s.apply_action(json.dumps({"action": "TOGGLE_TICKER"}))
+        before_progress, before_cost = dict(s.progress), s.metrics()["cost_savings_usd"]
+        packet, _ = s.tick(accrue=True)
+        assert packet.cumulative_metrics["simulation_paused"] is True
+        assert s.progress == before_progress and s.metrics()["cost_savings_usd"] == before_cost
+        s.apply_action(json.dumps({"action": "TOGGLE_TICKER"}))
+        s.tick(accrue=True)
+        assert s.metrics()["cost_savings_usd"] > before_cost
+
+    def test_kpis_start_from_zero(self):
+        m = SimulationSession(sim_hour=13).metrics()
+        assert m["co2_avoided_kg"] == 0 and m["energy_shifted_mwh"] == 0 and m["cost_savings_usd"] == 0
+
+    def test_reset_over_websocket(self, client):
+        with client.websocket_connect("/ws/grid-telemetry") as ws:
+            ws.send_json({"action": "SET_HOUR", "hour": 13})
+            receive_until(ws, lambda p: p["cumulative_metrics"]["cost_savings_usd"] > 0)
+            ws.send_json({"action": "RESET_METRICS"})
+            receive_until(ws, lambda p: p["cumulative_metrics"]["cost_savings_usd"] == 0)
+
+
+class TestGeminiRefresh:
+    @pytest.fixture
+    def session(self, monkeypatch):
+        monkeypatch.setattr(type(main.advisor), "uses_gemini", property(lambda self: True))
+        return SimulationSession(sim_hour=12)
+
+    def test_successful_answer_is_cached_and_served(self, session, monkeypatch):
+        import asyncio
+        from app.models.schemas import GeminiAgentExplanation
+
+        answer = GeminiAgentExplanation(primary_driver="From Gemini", reasoning_summary="s",
+                                        estimated_carbon_saved_kg=1, estimated_cost_saved_usd=1,
+                                        forecast_recommendation="f")
+        monkeypatch.setattr(main.advisor, "explain_with_gemini", lambda *a, **k: answer)
+        packet, fp = session.tick(accrue=False)
+        assert session.wants_gemini(fp)
+        asyncio.run(session.refresh_gemini(packet, fp))
+        served = session.tick(accrue=False)[0].ai_explanation
+        assert served.primary_driver == "From Gemini"
+        assert len(served.hourly_forecast) == 24  # the agent's own forecast is attached
+        assert not session.wants_gemini(fp)
+
+    def test_failed_call_is_not_cached_and_retries_later(self, session, monkeypatch):
+        import asyncio
+
+        monkeypatch.setattr(main.advisor, "explain_with_gemini", lambda *a, **k: None)
+        packet, fp = session.tick(accrue=False)
+        asyncio.run(session.refresh_gemini(packet, fp))
+        assert fp not in session._gemini_cache
+        assert not session.wants_gemini(fp)  # rate-limited right after the attempt
+        session._gemini_last_call -= main.GEMINI_MIN_INTERVAL_SECONDS
+        assert session.wants_gemini(fp)       # ...then retried
 
 
 class TestHttpEndpoints:

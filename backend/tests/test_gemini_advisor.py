@@ -6,7 +6,8 @@ import pytest
 
 from app.ai import gemini_advisor as ga
 from app.ai.gemini_advisor import ForecastSummary, GeminiAdvisor, rule_based_explanation
-from app.models.schemas import GeminiAgentExplanation
+from app.config import DEFAULT_GEMINI_MODEL
+from app.models.schemas import GeminiAgentExplanation, GeminiNarrative, HourlyForecastPoint
 
 GEMINI_RESULT = GeminiAgentExplanation(
     primary_driver="Solar Curtailment Window",
@@ -42,7 +43,12 @@ def fake_genai(monkeypatch):
     FakeClient.instances = []
 
     def install(**client_kwargs):
-        monkeypatch.setattr(ga.genai, "Client", lambda api_key=None: FakeClient(api_key=api_key, **client_kwargs))
+        def make(api_key=None, http_options=None):
+            client = FakeClient(api_key=api_key, **client_kwargs)
+            client.http_options = http_options
+            return client
+
+        monkeypatch.setattr(ga.genai, "Client", make)
         return FakeClient.instances
 
     return install
@@ -92,9 +98,19 @@ class TestGeminiCall:
         [client] = instances
         assert client.api_key == "test-key"
         [call] = client.calls
-        assert call["model"] == "gemini-2.5-flash"
-        assert call["config"].response_schema is GeminiAgentExplanation
+        assert call["model"] == DEFAULT_GEMINI_MODEL == "gemini-3.8-flash"
+        assert call["config"].response_schema is GeminiNarrative
+        assert client.http_options.timeout == ga.REQUEST_TIMEOUT_MS
         assert call["config"].response_mime_type == "application/json"
+
+    def test_model_overridable_by_argument_and_env(self, fake_genai, scenario, monkeypatch):
+        instances = fake_genai()
+        GeminiAdvisor(api_key="k", model="gemini-2.5-flash").explain(*scenario, sim_hour=12)
+        monkeypatch.setenv("GEMINI_MODEL", "gemini-3.5-flash")
+        advisor = GeminiAdvisor(api_key="k")
+        advisor.explain(*scenario, sim_hour=12)
+        assert [c.calls[0]["model"] for c in instances] == ["gemini-2.5-flash", "gemini-3.5-flash"]
+        assert advisor.model == "gemini-3.5-flash"
 
     def test_prompt_contains_grid_and_workload_context(self, fake_genai, scenario):
         instances = fake_genai()
@@ -116,6 +132,37 @@ class TestGeminiCall:
         fake_genai(error=error)
         result = GeminiAdvisor(api_key="k").explain(*scenario, sim_hour=12)
         assert result == rule_based_explanation(*scenario, 12)
+
+    def test_attaches_the_agents_forecast_not_a_generated_one(self, fake_genai, scenario):
+        fake_genai()
+        point = HourlyForecastPoint(hour=3, carbon_intensity=200, renewable_pct=40, recommended_action="BOOST",
+                                    solar_factor=0, wind_factor=0.9)
+        forecast = ForecastSummary(hourly=[point])
+        result = GeminiAdvisor(api_key="k").explain(*scenario, sim_hour=12, forecast=forecast)
+        assert result.primary_driver == GEMINI_RESULT.primary_driver
+        assert result.hourly_forecast == [point]
+
+    def test_rate_limit_triggers_cooldown(self, fake_genai, scenario, monkeypatch):
+        instances = fake_genai(error=RuntimeError("429 RESOURCE_EXHAUSTED"))
+        advisor = GeminiAdvisor(api_key="k")
+        assert advisor.explain_with_gemini(*scenario, sim_hour=12) is None
+        assert advisor.explain_with_gemini(*scenario, sim_hour=12) is None
+        assert len(instances[0].calls) == 1  # second call skipped during cooldown
+        monkeypatch.setattr(ga.time, "monotonic", lambda: 10**9)
+        advisor.explain_with_gemini(*scenario, sim_hour=12)
+        assert len(instances[0].calls) == 2
+
+    def test_other_errors_do_not_cool_down(self, fake_genai, scenario):
+        instances = fake_genai(error=RuntimeError("503 UNAVAILABLE"))
+        advisor = GeminiAdvisor(api_key="k")
+        advisor.explain_with_gemini(*scenario, sim_hour=12)
+        advisor.explain_with_gemini(*scenario, sim_hour=12)
+        assert len(instances[0].calls) == 2
+
+    def test_explain_with_gemini_returns_none_on_failure(self, fake_genai, scenario):
+        fake_genai(error=RuntimeError("503 UNAVAILABLE"))
+        assert GeminiAdvisor(api_key="k").explain_with_gemini(*scenario, sim_hour=12) is None
+        assert GeminiAdvisor().explain_with_gemini(*scenario, sim_hour=12) is None  # no key
 
     def test_garbage_response_falls_back(self, fake_genai, scenario):
         fake_genai(response=SimpleNamespace(parsed=None, text="not json"))

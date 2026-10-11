@@ -1,7 +1,7 @@
 """
 Gemini explanation layer.
 
-Asks gemini-2.5-flash for a structured GeminiAgentExplanation describing the agent's current
+Asks a Gemini Flash model (GEMINI_MODEL, default gemini-3.8-flash) for a structured GeminiAgentExplanation describing the agent's current
 dispatch decisions. Falls back to a deterministic rule-based explainer when GEMINI_API_KEY
 is not configured or the API call fails, so the demo never crashes.
 """
@@ -11,16 +11,27 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 
 from google import genai
 from google.genai import types
 
 from app.agents.dispatch_agent import CURTAIL_CARBON_ABOVE, estimate_impact
-from app.config import GEMINI_MODEL
-from app.models.schemas import GeminiAgentExplanation, GridZone, IndustrialWorkload
+from app.config import DEFAULT_GEMINI_MODEL
+from app.models.schemas import (
+    GeminiAgentExplanation,
+    GeminiNarrative,
+    GridZone,
+    HourlyForecastPoint,
+    IndustrialWorkload,
+)
 
 logger = logging.getLogger(__name__)
+
+REQUEST_TIMEOUT_MS = 20_000  # a hung call is dropped and retried later, never blocks the stream
+RATE_LIMIT_COOLDOWN_SECONDS = 45.0
+RATE_LIMIT_MARKERS = ("429", "RESOURCE_EXHAUSTED", "Quota exceeded")
 
 SYSTEM_INSTRUCTION = (
     "You are VoltShift, an autonomous grid load-shifting agent. Explain the dispatch decisions "
@@ -38,23 +49,31 @@ class ForecastSummary:
     projected_co2_avoided_kg: float = 0.0
     projected_cost_saved_usd: float = 0.0
     cleanest_window: dict[str, tuple[int, float]] = field(default_factory=dict)  # zone -> (hour, gCO2)
+    hourly: list[HourlyForecastPoint] = field(default_factory=list)  # 00:00..23:00 projection
 
 
 class GeminiAdvisor:
-    def __init__(self, api_key: str | None = None, model: str = GEMINI_MODEL):
+    def __init__(self, api_key: str | None = None, model: str | None = None):
         key = api_key if api_key is not None else os.getenv("GEMINI_API_KEY", "")
         self._api_key = (key or "").strip() or None
-        self._model = model
+        self._model = (model or os.getenv("GEMINI_MODEL", "")).strip() or DEFAULT_GEMINI_MODEL
         self._client = None
+        self._cooldown_until = 0.0
         if self._api_key:
             try:
-                self._client = genai.Client(api_key=self._api_key)
+                self._client = genai.Client(
+                    api_key=self._api_key, http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT_MS)
+                )
             except Exception as exc:  # misconfigured SDK must not take the demo down
                 logger.warning("Gemini client init failed, using rule-based explanations: %s", exc)
 
     @property
     def uses_gemini(self) -> bool:
         return self._client is not None
+
+    @property
+    def model(self) -> str:
+        return self._model
 
     def explain(
         self,
@@ -66,14 +85,41 @@ class GeminiAdvisor:
         peaker_spike: bool = False,
         autonomous: bool = True,
     ) -> GeminiAgentExplanation:
+        """Gemini's explanation, or the rule-based one if Gemini is unavailable. Never raises."""
         fallback = rule_based_explanation(zones, workloads, sim_hour, forecast, peaker_spike, autonomous)
-        if self._client is None:
-            return fallback
+        result = self.explain_with_gemini(
+            zones, workloads, sim_hour, forecast=forecast, peaker_spike=peaker_spike,
+            autonomous=autonomous, fallback=fallback,
+        )
+        return result if result is not None else fallback
+
+    def explain_with_gemini(
+        self,
+        zones: list[GridZone],
+        workloads: list[IndustrialWorkload],
+        sim_hour: int,
+        *,
+        forecast: ForecastSummary | None = None,
+        peaker_spike: bool = False,
+        autonomous: bool = True,
+        fallback: GeminiAgentExplanation | None = None,
+    ) -> GeminiAgentExplanation | None:
+        """Gemini's explanation, or None if there is no client or the call fails (so callers can retry)."""
+        if self._client is None or time.monotonic() < self._cooldown_until:
+            return None
+        if fallback is None:
+            fallback = rule_based_explanation(zones, workloads, sim_hour, forecast, peaker_spike, autonomous)
         try:
-            return self._ask_gemini(zones, workloads, sim_hour, forecast, peaker_spike, autonomous, fallback)
+            narrative = self._ask_gemini(zones, workloads, sim_hour, forecast, peaker_spike, autonomous, fallback)
         except Exception as exc:
-            logger.warning("Gemini call failed, using rule-based explanation: %s", exc)
-            return fallback
+            if any(marker in str(exc) for marker in RATE_LIMIT_MARKERS):
+                self._cooldown_until = time.monotonic() + RATE_LIMIT_COOLDOWN_SECONDS
+                logger.warning("Gemini rate-limited; pausing calls for %.0fs: %s", RATE_LIMIT_COOLDOWN_SECONDS, exc)
+            else:
+                logger.warning("Gemini call failed, using rule-based explanation: %s", exc)
+            return None
+        narrative_fields = narrative.model_dump(include=set(GeminiNarrative.model_fields))
+        return GeminiAgentExplanation(**narrative_fields, hourly_forecast=fallback.hourly_forecast)
 
     def _ask_gemini(self, zones, workloads, sim_hour, forecast, peaker_spike, autonomous, fallback):
         context = {
@@ -82,7 +128,7 @@ class GeminiAdvisor:
             "fossil_peaker_spike_active": peaker_spike,
             "zones": [z.model_dump(exclude={"coordinates"}) for z in zones],
             "workloads": [w.model_dump(exclude={"coordinates"}) for w in workloads],
-            "rule_based_projection": fallback.model_dump(),
+            "rule_based_projection": fallback.model_dump(exclude={"hourly_forecast"}),
         }
         if forecast:
             context["forecast_24h"] = {
@@ -98,16 +144,16 @@ class GeminiAdvisor:
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_INSTRUCTION,
                 response_mime_type="application/json",
-                response_schema=GeminiAgentExplanation,
+                response_schema=GeminiNarrative,
                 temperature=0.3,
             ),
         )
         parsed = getattr(response, "parsed", None)
-        if isinstance(parsed, GeminiAgentExplanation):
+        if isinstance(parsed, GeminiNarrative):
             return parsed
         if isinstance(parsed, dict):
-            return GeminiAgentExplanation.model_validate(parsed)
-        return GeminiAgentExplanation.model_validate_json(response.text)
+            return GeminiNarrative.model_validate(parsed)
+        return GeminiNarrative.model_validate_json(response.text)
 
 
 def _primary_driver(zones, workloads, peaker_spike, autonomous) -> str:
@@ -194,4 +240,5 @@ def rule_based_explanation(
         estimated_carbon_saved_kg=round(max(co2, 0.0), 1),
         estimated_cost_saved_usd=round(max(cost, 0.0), 2),
         forecast_recommendation=recommendation,
+        hourly_forecast=list(forecast.hourly) if forecast else [],
     )

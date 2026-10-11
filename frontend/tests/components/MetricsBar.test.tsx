@@ -25,6 +25,14 @@ describe('MetricsBar', () => {
     await waitFor(() => expect(screen.getByTestId('metric-co2')).toHaveTextContent('5,000'), { timeout: 3000 });
   });
 
+  it('jumps straight to the final value when reduced motion is requested', () => {
+    vi.stubGlobal('matchMedia', (q: string) => ({ matches: q.includes('reduce'), addEventListener() {}, removeEventListener() {} }));
+    const { rerender } = render(<MetricsBar metrics={makeMetrics({ co2_avoided_kg: 0 })} />);
+    rerender(<MetricsBar metrics={makeMetrics({ co2_avoided_kg: 5000 })} />);
+    expect(screen.getByTestId('metric-co2')).toHaveTextContent('5,000'); // synchronously, no animation
+    vi.unstubAllGlobals();
+  });
+
   it('shows the improvement-over-baseline badge', () => {
     render(<MetricsBar metrics={makeMetrics({ improvement_pct: 12.34 })} />);
     const badge = screen.getByTestId('baseline-badge');

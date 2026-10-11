@@ -34,6 +34,7 @@ export function reconnectDelay(attempt: number): number {
 export function useGridSocket(url: string = defaultSocketUrl()) {
   const [packet, setPacket] = useState<TelemetryPacket | null>(null);
   const [status, setStatus] = useState<SocketStatus>('connecting');
+  const [lastMessageAt, setLastMessageAt] = useState<number | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -53,7 +54,10 @@ export function useGridSocket(url: string = defaultSocketUrl()) {
       ws.onmessage = (event: MessageEvent) => {
         try {
           const data: unknown = JSON.parse(String(event.data));
-          if (isTelemetryPacket(data)) setPacket(data);
+          if (isTelemetryPacket(data)) {
+            setPacket(data);
+            setLastMessageAt(Date.now());
+          }
         } catch {
           // ignore malformed frames — the next tick will arrive in 1.5s
         }
@@ -82,5 +86,5 @@ export function useGridSocket(url: string = defaultSocketUrl()) {
     return true;
   }, []);
 
-  return { packet, status, connected: status === 'open', sendAction };
+  return { packet, status, connected: status === 'open', lastMessageAt, sendAction };
 }

@@ -34,20 +34,26 @@ Every API key is optional. If one is missing, VoltShift falls back as follows:
 
 ## How the agent decides
 
-Rules are checked in this order:
+Each site is checked against these rules in order, and the first match wins:
 
-| Condition                                                                     | Action                                       |
-|-------------------------------------------------------------------------------|----------------------------------------------|
-| Carbon > 350 g and deadline ≤ 1 h away                                        | **MAINTAIN** (the SLA wins over the grid)    |
-| Carbon > 550 g, flexibility ≥ 0.8 and ≥ 6 h of runway                         | **DEFER** to a projected clean window        |
-| Carbon > 350 g and flexibility ≥ 0.5                                          | **THROTTLE** by 50–80%, scaled by flexibility |
-| Carbon > 350 g and an inflexible job                                          | **MAINTAIN**                                 |
-| Renewables > 60% or carbon < 180 g                                            | **BOOST** to `max_kw`                        |
-| Anything else                                                                 | **MAINTAIN**                                 |
+| Condition                                                    | Action                                        |
+|--------------------------------------------------------------|-----------------------------------------------|
+| Deadline ≤ 3 h away and today's quota < 85%                  | **BOOST** to `max_kw` (the SLA wins over the grid) |
+| Renewables ≥ 60% or carbon < 180 g                           | **BOOST** into 70–100% of headroom            |
+| Carbon > 350 g, flexibility ≥ 0.7, more than 5 h of runway   | **DEFER** to 15% idle draw                    |
+| Carbon > 350 g, flexibility ≥ 0.7, short runway              | **THROTTLE** to 40%                           |
+| Carbon > 350 g, less flexible                                | **THROTTLE** by flexibility × 55%             |
+| Carbon > 240 g and flexibility ≥ 0.8                         | **THROTTLE** to 70%                           |
+| Anything else                                                | **MAINTAIN**                                  |
 
-When the agent curtails load, the energy is assumed to run later in a 120 g clean window. When it boosts
-load, that work is assumed to displace 400 g energy later in the day. KPIs and savings are measured
-against the unmanaged baseline.
+Each site's quota fills up as it draws power. Every connection runs its own simulation,
+and each update covers a 6-minute slice. KPIs start at zero:
+
+- **CO₂ avoided:** baseline emissions minus managed emissions.
+- **Clean energy shifted:** extra MWh drawn by boosted sites.
+- **Cost saved:** a flat $0.15/kWh baseline compared with time-of-use tariffs ($0.05 clean, $0.12 normal, $0.24 peaker).
+
+A gas peaker ramp adds fossil carbon to ERCOT, PJM and MISO; CAISO is unaffected.
 
 ## WebSocket API: `ws://localhost:8000/ws/grid-telemetry`
 
@@ -57,16 +63,29 @@ The server pushes a `TelemetryPacket` every 1.5 s, and again right away after ea
 {"action": "SET_HOUR", "hour": 14}
 {"action": "TOGGLE_MODE"}
 {"action": "TRIGGER_PEAKER_SPIKE"}
+{"action": "RESET_METRICS"}
+{"action": "TOGGLE_TICKER"}
 ```
 
 `TOGGLE_MODE` switches between the autonomous agent and the unmanaged baseline. `TRIGGER_PEAKER_SPIKE`
-turns the gas peaker spike on and off. The server ignores invalid messages.
+turns the gas peaker spike on and off. `RESET_METRICS` zeroes the KPIs and restarts every quota.
+`TOGGLE_TICKER` pauses or resumes the simulation; updates keep arriving while it's paused. The server
+ignores invalid messages.
+
+Each packet also carries:
+
+- **Per region:** `marginal_fuel` and `color_tier`.
+- **Per site:** `sla_progress_pct` and `delta_kw`.
+- **Forecast:** a 24-point `ai_explanation.hourly_forecast`.
+- **Load-weighted metrics:** `avg_carbon_managed`, `avg_carbon_baseline` and `total_active_kw`.
+
+The **Analytics** page (`/analytics`) shows all of this.
 
 HTTP endpoints: `GET /health` and `GET /api/telemetry?hour=12&autonomous=true&peaker_spike=false`.
 
 ## Tests
 
 ```bash
-cd backend && pip install -r requirements-dev.txt && pytest     # 221 tests
-cd frontend && npm test                                         # 71 tests
+cd backend && pip install -r requirements-dev.txt && pytest
+cd frontend && npm test
 ```

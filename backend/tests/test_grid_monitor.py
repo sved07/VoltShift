@@ -50,9 +50,25 @@ class TestDiurnalCurves:
         for iso in ISO_IDS:
             assert by_id(monitor.get_zones(13))[iso].solar_mw > by_id(monitor.get_zones(7))[iso].solar_mw
 
-    def test_wind_stronger_overnight_than_afternoon(self, monitor):
+    def test_wind_peaks_at_each_zones_configured_hour(self, monitor):
+        params = gm.load_iso_parameters()["zones"]
         for iso in ISO_IDS:
-            assert by_id(monitor.get_zones(3))[iso].wind_mw > by_id(monitor.get_zones(15))[iso].wind_mw
+            peak = params[iso]["wind_peak_hour"]
+            winds = {h: by_id(monitor.get_zones(h))[iso].wind_mw for h in range(24)}
+            assert max(winds, key=winds.get) == peak, iso
+            assert winds[peak] == pytest.approx(params[iso]["wind_max_mw"])
+            assert min(winds.values()) == pytest.approx(0.4 * params[iso]["wind_max_mw"], rel=0.02)
+
+    @pytest.mark.parametrize("hour", range(24))
+    def test_color_tier_and_marginal_fuel_follow_the_numbers(self, monitor, hour):
+        for z in monitor.get_zones(hour):
+            assert z.color_tier == gm.color_tier(z.carbon_intensity)
+            assert z.marginal_fuel == gm.marginal_fuel(z.renewable_pct, peaker=False)
+
+    def test_caiso_is_cleanest_at_solar_noon(self, monitor):
+        noon = by_id(monitor.get_zones(13))
+        assert noon["CAISO"].marginal_fuel.startswith("Surplus Solar")
+        assert min(noon.values(), key=lambda z: z.carbon_intensity).zone_id == "CAISO"
 
     def test_caiso_duck_curve_cleaner_at_noon_than_evening_peak(self, monitor):
         noon, evening = by_id(monitor.get_zones(12))["CAISO"], by_id(monitor.get_zones(19))["CAISO"]
@@ -82,13 +98,20 @@ class TestDeterminismAndValidation:
 
 
 class TestPeakerSpike:
-    def test_spike_raises_carbon_and_never_lowers_it(self, monitor):
+    def test_spike_adds_peaker_carbon_to_fossil_heavy_isos_only(self, monitor):
+        params = gm.load_iso_parameters()["zones"]
         normal, spiked = by_id(monitor.get_zones(14)), by_id(monitor.get_zones(14, peaker_spike=True))
-        assert all(spiked[i].carbon_intensity > normal[i].carbon_intensity for i in ISO_IDS)
+        for iso in ("ERCOT", "PJM", "MISO"):
+            assert spiked[iso].carbon_intensity == pytest.approx(
+                normal[iso].carbon_intensity + params[iso]["peaker_spike_addition"], abs=0.11
+            )
+            assert spiked[iso].marginal_fuel.startswith("Simple-Cycle Gas Peaker")
+            assert spiked[iso].color_tier == "red"
+        assert spiked["CAISO"] == normal["CAISO"]
 
-    def test_spike_reduces_renewable_share(self, monitor):
+    def test_spike_leaves_renewable_share_unchanged(self, monitor):
         normal, spiked = by_id(monitor.get_zones(14)), by_id(monitor.get_zones(14, peaker_spike=True))
-        assert all(spiked[i].renewable_pct <= normal[i].renewable_pct for i in ISO_IDS)
+        assert all(spiked[i].renewable_pct == normal[i].renewable_pct for i in ISO_IDS)
 
     @pytest.mark.parametrize("hour", [4, 12, 20])
     def test_spike_pushes_some_zone_above_throttle_threshold(self, monitor, hour):

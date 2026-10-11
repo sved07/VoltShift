@@ -51,16 +51,29 @@ describe('AIAuditPanel', () => {
   });
 
   it('labels the explainer source', () => {
-    const { rerender } = render(<AIAuditPanel explanation={null} simHour={0} explainer="gemini" />);
-    expect(screen.getByText(/gemini-2.5-flash/i)).toBeInTheDocument();
+    const { rerender } = render(<AIAuditPanel explanation={null} simHour={0} explainer="gemini" model="gemini-3.8-flash" />);
+    expect(screen.getByText('Live · gemini-3.8-flash')).toBeInTheDocument();
+    rerender(<AIAuditPanel explanation={null} simHour={0} explainer="gemini" />);
+    expect(screen.getByText('Live · Gemini')).toBeInTheDocument();
     rerender(<AIAuditPanel explanation={null} simHour={0} explainer="rule_based" />);
     expect(screen.getByText(/rule-based fallback/i)).toBeInTheDocument();
+  });
+
+  it('announces each new decision once, with context, in a single atomic status', () => {
+    const { rerender } = render(<AIAuditPanel explanation={makeExplanation()} simHour={12} />);
+    const announcer = screen.getByTestId('decision-announcer');
+    expect(announcer).toHaveAttribute('role', 'status');
+    expect(announcer).toHaveAttribute('aria-atomic', 'true');
+    expect(announcer).toHaveTextContent('New agent decision at 12:00: Solar Curtailment Window');
+    rerender(<AIAuditPanel explanation={makeExplanation({ primary_driver: 'Grid Fossil Peaker Spike', reasoning_summary: 'x' })} simHour={18} />);
+    expect(announcer).toHaveTextContent('New agent decision at 18:00: Grid Fossil Peaker Spike');
+    expect(screen.getAllByTestId('audit-card')[0]).not.toHaveAttribute('aria-live');
   });
 
   it('colours driver tags by cause', () => {
     expect(driverTone('Grid Fossil Peaker Spike')).toContain('red');
     expect(driverTone('Solar Curtailment Window')).toContain('amber');
     expect(driverTone('Overnight Wind Surplus')).toContain('cyan');
-    expect(driverTone('Unmanaged Baseline')).toContain('zinc');
+    expect(driverTone('Unmanaged Baseline')).toContain('bg-muted');
   });
 });

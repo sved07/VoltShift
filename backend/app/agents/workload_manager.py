@@ -2,38 +2,44 @@
 
 from __future__ import annotations
 
+from app.agents.grid_monitor import load_iso_parameters
 from app.models.schemas import IndustrialWorkload
 
-_SITES: list[dict] = [
-    # ERCOT
-    dict(id="dc-abilene", site_name="Abilene AI Campus", type="AI_TRAINING", zone_id="ERCOT",
-         current_kw=42000, max_kw=60000, flexibility_score=0.85, deadline_hour=22, coordinates=(-99.73, 32.45)),
-    dict(id="ev-dallas", site_name="Dallas Logistics EV Depot", type="EV_FLEET", zone_id="ERCOT",
-         current_kw=6500, max_kw=9000, flexibility_score=0.55, deadline_hour=5, coordinates=(-96.80, 32.78)),
-    # CAISO
-    dict(id="dc-santaclara", site_name="Santa Clara GPU Cluster", type="AI_TRAINING", zone_id="CAISO",
-         current_kw=30000, max_kw=45000, flexibility_score=0.9, deadline_hour=20, coordinates=(-121.96, 37.35)),
-    dict(id="ev-oakland", site_name="Port of Oakland Drayage Hub", type="EV_FLEET", zone_id="CAISO",
-         current_kw=4800, max_kw=7200, flexibility_score=0.7, deadline_hour=6, coordinates=(-122.28, 37.80)),
-    # PJM
-    dict(id="dc-ashburn", site_name="Ashburn Hyperscale DC", type="AI_TRAINING", zone_id="PJM",
-         current_kw=55000, max_kw=70000, flexibility_score=0.6, deadline_hour=23, coordinates=(-77.49, 39.04)),
-    dict(id="ev-newark", site_name="Newark Parcel Fleet Depot", type="EV_FLEET", zone_id="PJM",
-         current_kw=5200, max_kw=6000, flexibility_score=0.2, deadline_hour=6, coordinates=(-74.17, 40.73)),
-    # MISO
-    dict(id="dc-desmoines", site_name="Des Moines Model Foundry", type="AI_TRAINING", zone_id="MISO",
-         current_kw=38000, max_kw=50000, flexibility_score=0.95, deadline_hour=21, coordinates=(-93.61, 41.59)),
-    dict(id="ev-chicago", site_name="Chicago Transit Bus Barn", type="EV_FLEET", zone_id="MISO",
-         current_kw=3900, max_kw=4500, flexibility_score=0.1, deadline_hour=4, coordinates=(-87.63, 41.88)),
-]
+# Share of a day's quota delivered by one kW running for one hour (a full day ~ 180 kWh-units).
+PROGRESS_PER_KWH = 1.0 / 180.0
 
 
 class WorkloadManager:
     def __init__(self, sites: list[dict] | None = None):
+        data = load_iso_parameters()
+        self._initial_progress = float(data.get("initial_sla_progress_pct", 35.0))
+        templates = sites if sites is not None else data["workloads"]
         self._workloads = [
-            IndustrialWorkload(status="MAINTAIN", **site) for site in (sites if sites is not None else _SITES)
+            IndustrialWorkload(
+                status="MAINTAIN",
+                current_kw=site["baseline_kw"],
+                **{k: v for k, v in site.items() if k != "current_kw"},
+            )
+            for site in templates
         ]
+
+    @property
+    def initial_progress(self) -> float:
+        return self._initial_progress
 
     def get_workloads(self) -> list[IndustrialWorkload]:
         """Unmanaged baseline workloads. Returns copies, so callers may freely modify them."""
         return [w.model_copy(deep=True) for w in self._workloads]
+
+    def initial_progress_map(self) -> dict[str, float]:
+        """Fresh per-session SLA progress (percent of today's quota delivered)."""
+        return {w.id: self._initial_progress for w in self._workloads}
+
+
+def advance_progress(progress: dict[str, float], workloads: list[IndustrialWorkload], hours: float) -> dict[str, float]:
+    """Credit each site for the energy it drew over `hours`. Returns a new map, capped at 100%."""
+    updated = dict(progress)
+    for w in workloads:
+        current = updated.get(w.id, 0.0)
+        updated[w.id] = round(min(100.0, current + w.current_kw * hours * PROGRESS_PER_KWH), 1)
+    return updated

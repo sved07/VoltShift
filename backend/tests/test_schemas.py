@@ -5,7 +5,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from app.models.schemas import GeminiAgentExplanation, GridZone, TelemetryPacket
+from app.models.schemas import GeminiAgentExplanation, GeminiNarrative, GridZone, HourlyForecastPoint, TelemetryPacket
 
 
 class TestGridZone:
@@ -29,6 +29,13 @@ class TestGridZone:
         data.pop(field)
         with pytest.raises(ValidationError):
             GridZone(**data)
+
+    def test_v2_grid_fields_default_and_validate(self, make_zone):
+        zone = make_zone()
+        assert zone.marginal_fuel and zone.color_tier == "green"
+        assert make_zone(color_tier="red").color_tier == "red"
+        with pytest.raises(ValidationError):
+            make_zone(color_tier="purple")
 
     def test_non_numeric_carbon_rejected(self, make_zone):
         with pytest.raises(ValidationError):
@@ -67,6 +74,19 @@ class TestIndustrialWorkload:
         with pytest.raises(ValidationError):
             make_workload(deadline_hour=hour)
 
+    @pytest.mark.parametrize("pct", [-1, 100.1])
+    def test_sla_progress_bounded_0_100(self, make_workload, pct):
+        with pytest.raises(ValidationError):
+            make_workload(sla_progress_pct=pct)
+
+    def test_forecast_point_validates_action_and_hour(self):
+        ok = dict(hour=5, carbon_intensity=1, renewable_pct=1, recommended_action="DEFER", solar_factor=0, wind_factor=1)
+        assert HourlyForecastPoint(**ok).recommended_action == "DEFER"
+        with pytest.raises(ValidationError):
+            HourlyForecastPoint(**(ok | {"hour": 24}))
+        with pytest.raises(ValidationError):
+            HourlyForecastPoint(**(ok | {"recommended_action": "PAUSE"}))
+
     def test_serializes_spec_fields(self, make_workload):
         payload = json.loads(make_workload().model_dump_json())
         assert set(payload) >= {
@@ -76,9 +96,17 @@ class TestIndustrialWorkload:
 
 
 class TestGeminiAgentExplanation:
-    def test_json_schema_exposes_exactly_spec_fields(self):
-        # gemini_advisor passes this class as response_schema
+    def test_packet_explanation_adds_the_hourly_forecast(self):
         props = GeminiAgentExplanation.model_json_schema()["properties"]
+        assert "hourly_forecast" in props
+        assert GeminiAgentExplanation(
+            primary_driver="d", reasoning_summary="r", estimated_carbon_saved_kg=1,
+            estimated_cost_saved_usd=1, forecast_recommendation="f",
+        ).hourly_forecast == []
+
+    def test_gemini_response_schema_exposes_exactly_spec_fields(self):
+        # gemini_advisor passes GeminiNarrative as response_schema; the forecast is computed, not generated
+        props = GeminiNarrative.model_json_schema()["properties"]
         assert set(props) == {
             "primary_driver",
             "reasoning_summary",

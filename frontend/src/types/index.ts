@@ -3,6 +3,7 @@
 export type WorkloadType = 'AI_TRAINING' | 'EV_FLEET';
 export type DispatchStatus = 'BOOST' | 'MAINTAIN' | 'THROTTLE' | 'DEFER';
 export type LonLat = [number, number];
+export type ColorTier = 'green' | 'amber' | 'red';
 
 export interface GridZone {
   zone_id: string;
@@ -12,6 +13,8 @@ export interface GridZone {
   solar_mw: number;
   wind_mw: number;
   coordinates: LonLat;
+  marginal_fuel?: string;
+  color_tier?: ColorTier;
 }
 
 export interface IndustrialWorkload {
@@ -26,6 +29,17 @@ export interface IndustrialWorkload {
   status: DispatchStatus;
   coordinates?: LonLat | null;
   baseline_kw?: number | null;
+  sla_progress_pct?: number | null; // share of today's quota delivered, 0-100
+  delta_kw?: number;
+}
+
+export interface HourlyForecastPoint {
+  hour: number;
+  carbon_intensity: number; // load-weighted across ISOs
+  renewable_pct: number;
+  recommended_action: DispatchStatus;
+  solar_factor: number;
+  wind_factor: number;
 }
 
 export interface GeminiAgentExplanation {
@@ -34,6 +48,7 @@ export interface GeminiAgentExplanation {
   estimated_carbon_saved_kg: number;
   estimated_cost_saved_usd: number;
   forecast_recommendation: string;
+  hourly_forecast?: HourlyForecastPoint[];
 }
 
 export interface CumulativeMetrics {
@@ -46,7 +61,12 @@ export interface CumulativeMetrics {
   mode: 'AUTONOMOUS' | 'UNMANAGED';
   peaker_spike_active: boolean;
   explainer: 'gemini' | 'rule_based';
+  explainer_model?: string | null;
   grid_source: string;
+  avg_carbon_managed?: number;
+  avg_carbon_baseline?: number;
+  total_active_kw?: number;
+  simulation_paused?: boolean;
 }
 
 export interface TelemetryPacket {
@@ -61,4 +81,6 @@ export interface TelemetryPacket {
 export type ClientAction =
   | { action: 'SET_HOUR'; hour: number }
   | { action: 'TOGGLE_MODE' }
-  | { action: 'TRIGGER_PEAKER_SPIKE' };
+  | { action: 'TRIGGER_PEAKER_SPIKE' }
+  | { action: 'RESET_METRICS' }
+  | { action: 'TOGGLE_TICKER' };

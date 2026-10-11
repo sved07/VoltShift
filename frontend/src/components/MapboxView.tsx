@@ -159,7 +159,7 @@ function MapCanvas({ token, zones, workloads, selectedId, onSelect }: Omit<Mapbo
   useEffect(() => {
     const target = workloads.find((w) => w.id === selectedId)?.coordinates;
     if (!selectedId || !target || !mapRef.current) return;
-    mapRef.current.flyTo({ center: target, zoom: 9.6, pitch: 62, bearing: 20, speed: 1.4, essential: true });
+    mapRef.current.flyTo({ center: target, zoom: 9.6, pitch: 62, bearing: 20, speed: 1.4 }); // non-essential: Mapbox skips the flight under reduced motion
     // Fly only when the selection changes, not on every telemetry tick.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
@@ -170,7 +170,7 @@ function MapCanvas({ token, zones, workloads, selectedId, onSelect }: Omit<Mapbo
 /** Shown when no Mapbox token is configured, so the demo still works offline. */
 function SchematicGrid({ zones, workloads, onSelect }: Pick<MapboxViewProps, 'zones' | 'workloads' | 'onSelect'>) {
   return (
-    <div className="flex h-full flex-col gap-3 rounded-2xl bg-zinc-950/80 p-4 ring-1 ring-zinc-800" data-testid="schematic-grid">
+    <div className="flex h-full flex-col gap-3 glass p-4" data-testid="schematic-grid">
       <div className="flex items-center gap-2 text-xs text-amber-300">
         <MapPinOff size={14} /> Set VITE_MAPBOX_TOKEN in frontend/.env to enable the 3D Mapbox view.
       </div>
@@ -182,12 +182,12 @@ function SchematicGrid({ zones, workloads, onSelect }: Pick<MapboxViewProps, 'zo
             style={{ backgroundColor: `${carbonColor(z.carbon_intensity)}1f`, borderColor: carbonColor(z.carbon_intensity) }}
           >
             <div className="flex items-baseline justify-between">
-              <span className="font-semibold text-zinc-100">{z.name}</span>
+              <span className="font-semibold text-fg">{z.name}</span>
               <span className="font-mono text-lg" style={{ color: carbonColor(z.carbon_intensity) }}>
                 {Math.round(z.carbon_intensity)} g
               </span>
             </div>
-            <div className="text-[11px] text-zinc-400">{Math.round(z.renewable_pct)}% renewable</div>
+            <div className="text-[11px] text-muted-fg">{Math.round(z.renewable_pct)}% renewable</div>
             <div className="mt-2 flex flex-wrap gap-1.5">
               {workloads
                 .filter((w) => w.zone_id === z.zone_id)

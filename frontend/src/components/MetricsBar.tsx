@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { motion } from 'framer-motion';
 import { DollarSign, Leaf, Sun, TrendingUp, Zap } from 'lucide-react';
+import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
+import { fadeUp, staggerChildren } from '../lib/motion';
 import type { CumulativeMetrics } from '../types';
 
 const ANIMATION_MS = 900;
@@ -7,10 +10,11 @@ const ANIMATION_MS = 900;
 function useAnimatedNumber(target: number): number {
   const [value, setValue] = useState(target);
   const fromRef = useRef(target);
+  const reducedMotion = usePrefersReducedMotion();
 
   useEffect(() => {
     const from = fromRef.current;
-    if (from === target || typeof requestAnimationFrame === 'undefined') {
+    if (from === target || reducedMotion || typeof requestAnimationFrame === 'undefined') {
       fromRef.current = target;
       setValue(target);
       return;
@@ -28,7 +32,7 @@ function useAnimatedNumber(target: number): number {
     };
     frame = requestAnimationFrame(step);
     return () => cancelAnimationFrame(frame);
-  }, [target]);
+  }, [target, reducedMotion]);
 
   return value;
 }
@@ -49,13 +53,13 @@ interface CounterProps {
 function Counter({ id, label, value, format, icon, accent }: CounterProps) {
   const animated = useAnimatedNumber(value);
   return (
-    <div className="flex items-center gap-3 rounded-xl bg-zinc-900/70 px-4 py-3 ring-1 ring-zinc-800" data-testid={`metric-${id}`} data-target={format(value)}>
-      <div className={`rounded-lg p-2 ${accent}`}>{icon}</div>
+    <motion.div variants={fadeUp} className="flex items-center gap-3 glass px-4 py-3" data-testid={`metric-${id}`} data-target={format(value)}>
+      <div className={`rounded-lg p-2 ${accent}`} aria-hidden="true">{icon}</div>
       <div>
-        <div className="text-[11px] uppercase tracking-widest text-zinc-400">{label}</div>
-        <div className="font-mono text-xl font-semibold tabular-nums text-zinc-50">{format(animated)}</div>
+        <div className="text-[11px] uppercase tracking-widest text-muted-fg">{label}</div>
+        <div className="font-mono text-xl font-semibold tabular-nums text-fg">{format(animated)}</div>
       </div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -67,7 +71,13 @@ export function MetricsBar({ metrics }: { metrics: CumulativeMetrics | null }) {
   const unmanaged = metrics?.mode === 'UNMANAGED';
 
   return (
-    <section aria-label="Live KPIs" className="grid grid-cols-2 gap-3 px-3 pt-3 md:grid-cols-3 xl:grid-cols-5">
+    <motion.section
+      aria-label="Live KPIs"
+      variants={staggerChildren(0.04, 0.2)}
+      initial="hidden"
+      animate="show"
+      className="grid grid-cols-2 gap-3 px-3 pt-3 md:grid-cols-3 xl:grid-cols-5"
+    >
       <Counter
         id="co2"
         label="CO₂ Avoided (kg)"
@@ -100,10 +110,11 @@ export function MetricsBar({ metrics }: { metrics: CumulativeMetrics | null }) {
         icon={<DollarSign size={18} />}
         accent="bg-violet-500/15 text-violet-300"
       />
-      <div
+      <motion.div
+        variants={fadeUp}
         data-testid="baseline-badge"
-        className={`flex items-center gap-3 rounded-xl px-4 py-3 ring-1 ${
-          unmanaged ? 'bg-zinc-900 ring-zinc-700 text-zinc-400' : 'bg-neon/10 ring-neon/40 text-neon shadow-neon'
+        className={`col-span-2 flex items-center gap-3 rounded-2xl px-4 py-3 md:col-span-1 ${
+          unmanaged ? 'glass text-muted-fg' : 'border border-neon/40 bg-neon/10 text-neon shadow-neon backdrop-blur-md'
         }`}
       >
         <TrendingUp size={22} />
@@ -113,7 +124,7 @@ export function MetricsBar({ metrics }: { metrics: CumulativeMetrics | null }) {
             {unmanaged ? 'Agent paused — unmanaged baseline' : 'Improvement over unmanaged baseline'}
           </div>
         </div>
-      </div>
-    </section>
+      </motion.div>
+    </motion.section>
   );
 }

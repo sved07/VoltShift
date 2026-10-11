@@ -14,7 +14,8 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 # Does not override variables that are already set in the process environment.
 load_dotenv(BACKEND_DIR / ".env")
 
-GEMINI_MODEL = "gemini-2.5-flash"
+# gemini-2.5-flash (the original spec) is closed to new API users; override with GEMINI_MODEL.
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
 
 
@@ -26,6 +27,7 @@ def _env_key(name: str) -> str | None:
 @dataclass(frozen=True)
 class Settings:
     gemini_api_key: str | None = field(default_factory=lambda: _env_key("GEMINI_API_KEY"))
+    gemini_model: str = field(default_factory=lambda: _env_key("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL)
     electricity_maps_key: str | None = field(default_factory=lambda: _env_key("ELECTRICITY_MAPS_KEY"))
     cors_origins: list[str] = field(
         default_factory=lambda: [

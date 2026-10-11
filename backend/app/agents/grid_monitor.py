@@ -1,7 +1,9 @@
 """
 Grid monitor: regional carbon intensity and renewable share for ERCOT, CAISO, PJM and MISO.
 
-Data comes from a deterministic diurnal model parameterised by mock_iso_telemetry.json.
+Data comes from a deterministic diurnal model parameterised by mock_iso_telemetry.json
+(solar bell curve, per-zone wind peak, carbon falling with renewable share). A gas peaker
+ramp hits ERCOT, PJM and MISO; CAISO's hydro/solar mix rides through it.
 When ELECTRICITY_MAPS_KEY is set, the live carbon intensity from the Electricity Maps
 API overrides the modelled value (cached, with automatic fallback to the model on error).
 """
@@ -28,8 +30,9 @@ ELECTRICITY_MAPS_URL = "https://api.electricitymap.org/v3/carbon-intensity/lates
 LIVE_CACHE_SECONDS = 300
 LIVE_RETRY_AFTER_FAILURE_SECONDS = 60
 LIVE_TIMEOUT_SECONDS = 3.0
-MAX_CLEAN_SHARE = 0.95
-LIFECYCLE_FLOOR_CI = 15.0
+RENEWABLE_PCT_FLOOR = 5.0
+CARBON_FLOOR_CI = 45.0
+GREEN_BELOW, RED_ABOVE = 150.0, 320.0
 
 
 @lru_cache(maxsize=4)
@@ -39,47 +42,58 @@ def load_iso_parameters(path: Path = TELEMETRY_FILE) -> dict:
 
 
 def solar_factor(hour: float) -> float:
-    """0 at night, peaking near 12:30; zero outside 06:00-19:00."""
-    return max(0.0, math.sin(math.pi * (hour - 6) / 13)) if 6 < hour < 19 else 0.0
+    """Daylight bell curve: 0 before 06:00 and after 19:00, peaking ~12:30."""
+    if hour < 6 or hour > 19:
+        return 0.0
+    return max(0.0, math.sin((hour - 6) / 13.0 * math.pi))
 
 
-def wind_factor(hour: float, amplitude: float) -> float:
-    """Wind is strongest overnight (~03:00) and weakest mid-afternoon."""
-    return 1 + amplitude * math.cos(2 * math.pi * (hour - 3) / 24)
+def wind_factor(hour: float, peak_hour: int) -> float:
+    """0.4 at the far side of the day from the zone's wind peak, 1.0 at the peak."""
+    distance = abs(hour - peak_hour)
+    if distance > 12:
+        distance = 24 - distance
+    return 0.4 + 0.6 * math.cos(distance / 12.0 * math.pi * 0.5)
 
 
-def load_factor(hour: float) -> float:
-    """Baseline demand with a daytime bump and an evening (18:00) peak."""
-    return 0.72 + 0.12 * solar_factor(hour) + 0.28 * math.exp(-((hour - 18) ** 2) / 12.5)
+def color_tier(carbon_intensity: float) -> str:
+    if carbon_intensity < GREEN_BELOW:
+        return "green"
+    return "amber" if carbon_intensity <= RED_ABOVE else "red"
 
 
-def model_zone(zone_id: str, params: dict, hour: int) -> GridZone:
-    solar_mw = params["solar_capacity_mw"] * solar_factor(hour)
-    wind_mw = params["wind_base_mw"] * wind_factor(hour, params["wind_amplitude"])
-    load_mw = params["base_load_mw"] * load_factor(hour)
+def marginal_fuel(renewable_pct: float, peaker: bool) -> str:
+    if peaker:
+        return "Simple-Cycle Gas Peaker / Distillate Fuel Oil"
+    if renewable_pct > 65.0:
+        return "Surplus Solar / Wind (Curtailment Risk)"
+    if renewable_pct > 40.0:
+        return "Hydro / Natural Gas"
+    return "Combined-Cycle Gas"
 
-    renewable_share = min(MAX_CLEAN_SHARE, (solar_mw + wind_mw + params["hydro_mw"]) / load_mw)
-    clean_share = min(MAX_CLEAN_SHARE, renewable_share + params["nuclear_mw"] / load_mw)
-    carbon = params["fossil_ci"] * (1 - clean_share) + LIFECYCLE_FLOOR_CI
+
+def model_zone(zone_id: str, params: dict, hour: int, peaker: bool = False) -> GridZone:
+    """Deterministic diurnal model. A peaker ramp adds `peaker_spike_addition` gCO2/kWh."""
+    solar_mw = round(params["solar_max_mw"] * solar_factor(hour), 1)
+    wind_mw = round(params["wind_max_mw"] * wind_factor(hour, params["wind_peak_hour"]), 1)
+    renewable = solar_mw + wind_mw
+    renewable_pct = min(100.0, max(RENEWABLE_PCT_FLOOR, round(renewable / (renewable + params["fossil_base_mw"]) * 100.0, 1)))
+
+    carbon = params["base_carbon"] * (1.15 - (renewable_pct / 100.0) * 0.85)
+    if peaker:
+        carbon += params["peaker_spike_addition"]
+    carbon = round(max(CARBON_FLOOR_CI, carbon), 1)
 
     return GridZone(
         zone_id=zone_id,
         name=params["name"],
-        carbon_intensity=round(carbon, 1),
-        renewable_pct=round(renewable_share * 100, 1),
-        solar_mw=round(solar_mw, 1),
-        wind_mw=round(wind_mw, 1),
+        carbon_intensity=carbon,
+        renewable_pct=renewable_pct,
+        solar_mw=solar_mw,
+        wind_mw=wind_mw,
         coordinates=tuple(params["coordinates"]),
-    )
-
-
-def apply_peaker_spike(zone: GridZone, spike: dict) -> GridZone:
-    """A gas peaker ramp adds fossil generation: dirtier and a smaller renewable share."""
-    return zone.model_copy(
-        update={
-            "carbon_intensity": round(zone.carbon_intensity * spike["carbon_multiplier"] + spike["carbon_adder"], 1),
-            "renewable_pct": round(zone.renewable_pct * spike["renewable_share_multiplier"], 1),
-        }
+        marginal_fuel=marginal_fuel(renewable_pct, peaker),
+        color_tier=color_tier(carbon),
     )
 
 
@@ -123,14 +137,14 @@ class GridMonitor:
             raise ValueError(f"sim_hour must be an integer in 0..23, got {sim_hour!r}")
 
         live = self._live_carbon()
-        spike = self._params["peaker_spike"]
+        peaker_zones = set(self._params["peaker_spike_zones"]) if peaker_spike else set()
         zones = []
         for zone_id, params in self._params["zones"].items():
-            zone = model_zone(zone_id, params, sim_hour)
+            peaker = zone_id in peaker_zones
+            zone = model_zone(zone_id, params, sim_hour, peaker)
             if zone_id in live:
-                zone = zone.model_copy(update={"carbon_intensity": round(live[zone_id], 1)})
-            if peaker_spike:
-                zone = apply_peaker_spike(zone, spike)
+                carbon = round(live[zone_id] + (params["peaker_spike_addition"] if peaker else 0.0), 1)
+                zone = zone.model_copy(update={"carbon_intensity": carbon, "color_tier": color_tier(carbon)})
             zones.append(zone)
         return zones
 

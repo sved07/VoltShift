@@ -16,6 +16,7 @@ if str(BACKEND_DIR) not in sys.path:
 # does not override existing variables) can never make the suite hit real APIs.
 os.environ["GEMINI_API_KEY"] = ""
 os.environ["ELECTRICITY_MAPS_KEY"] = ""
+os.environ["GEMINI_MODEL"] = ""
 
 ISO_IDS = {"ERCOT", "CAISO", "PJM", "MISO"}
 STATUSES = {"BOOST", "MAINTAIN", "THROTTLE", "DEFER"}
@@ -25,6 +26,7 @@ STATUSES = {"BOOST", "MAINTAIN", "THROTTLE", "DEFER"}
 def _no_api_keys(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "")
     monkeypatch.setenv("ELECTRICITY_MAPS_KEY", "")
+    monkeypatch.setenv("GEMINI_MODEL", "")
 
 
 @pytest.fixture

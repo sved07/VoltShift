@@ -29,7 +29,7 @@ export function ControlBar({ simHour, autonomous, peakerActive, connected, onAct
   }, [playing]);
 
   return (
-    <footer className="sticky bottom-0 z-10 flex flex-wrap items-center gap-4 border-t border-zinc-800 bg-slate-950/90 px-4 py-3 backdrop-blur">
+    <footer className="z-10 md:sticky md:bottom-0 flex flex-wrap items-center gap-4 border-t border-white/10 bg-canvas/80 px-4 py-3 backdrop-blur">
       <button
         type="button"
         onClick={() => setPlaying((p) => !p)}
@@ -41,7 +41,7 @@ export function ControlBar({ simHour, autonomous, peakerActive, connected, onAct
       </button>
 
       <div className="flex min-w-[240px] flex-1 items-center gap-3">
-        <label htmlFor="sim-hour" className="text-xs uppercase tracking-widest text-zinc-400">
+        <label htmlFor="sim-hour" className="text-xs uppercase tracking-widest text-muted-fg">
           Simulated Hour
         </label>
         <input
@@ -55,7 +55,7 @@ export function ControlBar({ simHour, autonomous, peakerActive, connected, onAct
           onChange={(e) => onAction({ action: 'SET_HOUR', hour: Number(e.target.value) })}
           className="h-1.5 flex-1 cursor-pointer accent-cyan-400"
         />
-        <span className="w-16 rounded-md bg-zinc-900 px-2 py-1 text-center font-mono text-lg text-electric" data-testid="sim-hour">
+        <span className="w-16 rounded-md bg-muted/60 px-2 py-1 text-center font-mono text-lg text-electric" data-testid="sim-hour">
           {formatHour(simHour)}
         </span>
       </div>
@@ -68,21 +68,21 @@ export function ControlBar({ simHour, autonomous, peakerActive, connected, onAct
         className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold ring-1 transition disabled:opacity-40 ${
           peakerActive
             ? 'animate-pulse bg-red-600/30 text-red-200 ring-red-500 shadow-[0_0_20px_rgba(239,68,68,0.45)]'
-            : 'bg-zinc-900 text-red-300 ring-red-500/40 hover:bg-red-950'
+            : 'bg-muted/60 text-red-300 ring-red-500/40 hover:bg-red-950'
         }`}
       >
         <Flame size={16} />
         {peakerActive ? 'Peaker Ramp Active — Click to Clear' : 'Simulate Gas Peaker Plant Ramp (Grid Spike)'}
       </button>
 
-      <div role="group" aria-label="Dispatch mode" className="flex overflow-hidden rounded-lg ring-1 ring-zinc-700">
+      <div role="group" aria-label="Dispatch mode" className="flex overflow-hidden rounded-lg ring-1 ring-white/15">
         <button
           type="button"
           aria-pressed={autonomous}
           disabled={!connected || autonomous}
           onClick={() => onAction({ action: 'TOGGLE_MODE' })}
           className={`flex items-center gap-2 px-3 py-2 text-sm font-semibold transition ${
-            autonomous ? 'bg-neon/15 text-neon' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200'
+            autonomous ? 'bg-neon/15 text-neon' : 'bg-muted/60 text-muted-fg hover:text-fg'
           }`}
         >
           <Bot size={16} /> Autonomous Agent Dispatch
@@ -93,7 +93,7 @@ export function ControlBar({ simHour, autonomous, peakerActive, connected, onAct
           disabled={!connected || !autonomous}
           onClick={() => onAction({ action: 'TOGGLE_MODE' })}
           className={`flex items-center gap-2 px-3 py-2 text-sm font-semibold transition ${
-            !autonomous ? 'bg-zinc-700 text-zinc-100' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200'
+            !autonomous ? 'bg-line/60 text-fg' : 'bg-muted/60 text-muted-fg hover:text-fg'
           }`}
         >
           <ShieldOff size={16} /> Unmanaged Baseline
